@@ -1,3 +1,6 @@
 /controller/build
 /worker/build
 
+.vscode/
+/controller/.vscode/
+/worker/.vscode/
