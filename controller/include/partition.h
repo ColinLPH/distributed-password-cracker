@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <iostream>
 #include "password.h"
 
 constexpr size_t DEFAULT_PREFIX_LEN = 1;
@@ -29,5 +30,6 @@ struct Partition
 
 std::vector<std::string> generate_prefixes(const unsigned prefix_len);
 std::vector<std::unique_ptr<Partition>> create_partitions(const unsigned prefix_len);
+int update_prefix(std::string &prefix, std::vector<std::unique_ptr<Partition>> &partitions);
 
 #endif // PARTITION_H

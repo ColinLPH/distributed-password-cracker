@@ -1,23 +1,15 @@
 #include <iostream>
 #include <unistd.h>
 
-#include <sys/epoll.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-
-#include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
-
+#include "network.h"
 #include "parse_args.h"
 #include "partition.h"
-#include "network.h"
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[])
+{
     Args args;
 
-    if(parse_args(argc, argv, args) != 0)
+    if (parse_args(argc, argv, args) != 0)
     {
         return -1;
     }
@@ -26,78 +18,139 @@ int main(int argc, char* argv[]) {
     auto partitions = create_partitions(DEFAULT_PREFIX_LEN);
     bool password_found = false;
 
-    try {
-        auto listen_fd = create_listen_socket(args.port);
+    try
+    {
+        Fd listen_fd(create_listen_socket(args.port));
+        if (!make_fd_non_blocking(listen_fd.get()))
+        {
+            throw std::runtime_error("Error making listen socket non-blocking");
+        }
+
+        std::vector<pollfd> pollfds;
+        std::vector<Fd> client_fds;
+
+        pollfd listen_entry{};
+        listen_entry.fd = listen_fd.get();
+        listen_entry.events = POLLIN;
+        pollfds.push_back(listen_entry);
+
         std::cout << "Server listening on port " << args.port << "\n";
 
-        auto epoll_fd = epoll_create1(0);
-        if (epoll_fd == -1) {
-            throw std::runtime_error("Error creating epoll instance");
-            ::close(listen_fd);
-        }
-
-        epoll_event event{};
-        event.data.fd = listen_fd;
-        event.events = EPOLLIN | EPOLLET;
-        if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_fd, &event) == -1) {
-            throw std::runtime_error("Error adding listen socket to epoll");
-            ::close(listen_fd);
-            ::close(epoll_fd);
-        }
-
-        std::vector<epoll_event> events(MAX_EPOLL_EVENTS);
-
-        while (true)
+        while (!password_found)
         {
-            int n = epoll_wait(epoll_fd, events.data(), MAX_EPOLL_EVENTS, -1);
-            if (n < 0) {
-                throw std::runtime_error("epoll_wait failed");
+
+            int n = poll(pollfds.data(), pollfds.size(), -1);
+            if (n < 0)
+            {
+                throw std::runtime_error("poll() failed");
             }
 
-            for (size_t i = 0; i < n; i++)
+            for (size_t i = 0; i < pollfds.size(); i++)
             {
-                if (events[i].data.fd == listen_fd)
+                auto &pfd = pollfds[i];
+
+                // 1. Handle new incoming connections
+                if (pfd.fd == listen_fd.get() && (pfd.revents & POLLIN))
                 {
-                    // Handle new connection
-                    while (true) {
+
+                    while (true)
+                    {
                         sockaddr_in client_addr{};
-                        socklen_t client_len = sizeof(client_addr);
-                        int client_fd = accept(listen_fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
-                        if (client_fd == -1) {
-                            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                                break; // No more incoming connections
-                            } else {
-                                throw std::runtime_error("Error accepting connection");
-                            }
+                        socklen_t len = sizeof(client_addr);
+
+                        int raw_fd =
+                            accept(listen_fd.get(), (sockaddr *)&client_addr, &len);
+
+                        if (raw_fd < 0)
+                        {
+                            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                                break;
+                            throw std::runtime_error("Error accepting connection");
+                        }
+
+                        Fd client_fd(raw_fd);
+
+                        if (!make_fd_non_blocking(client_fd.get()))
+                        {
+                            throw std::runtime_error("Error making client socket non-blocking");
                         }
 
                         std::cout << "Accepted connection from "
                                   << inet_ntoa(client_addr.sin_addr) << ":"
                                   << ntohs(client_addr.sin_port) << "\n";
 
-                        // Make the client socket non-blocking
-                        if (!make_fd_non_blocking(client_fd)) {
-                            ::close(client_fd);
-                            throw std::runtime_error("Error making client socket non-blocking");
-                        }
+                        pollfd entry{};
+                        entry.fd = client_fd.get();
+                        entry.events = POLLIN;
+                        pollfds.push_back(entry);
 
-                        // Add the new client socket to epoll
-                        epoll_event client_event{};
-                        client_event.data.fd = client_fd;
-                        client_event.events = EPOLLIN | EPOLLET;
-                        if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &client_event) == -1) {
-                            ::close(client_fd);
-                            throw std::runtime_error("Error adding client socket to epoll");
+                        client_fds.push_back(std::move(client_fd));
+                        
+                        if (send_conack(entry.fd, 3, args) != 0)
+                        {
+                            std::cerr << "Failed to send CONACK to client (fd: " << entry.fd << ")\n";
+                            ::close(entry.fd);
+                            entry.fd = -1; // Mark for removal
                         }
                     }
-                } else {
-                    // handle data from client
+                }
+
+                // 2. Handle client data
+                else if (pfd.fd != listen_fd.get() && (pfd.revents & POLLIN))
+                {
+                    std::vector<uint8_t> buffer;
+                    ssize_t n = recv_full_packet(pfd.fd, buffer); // Use our robust helper
+                    if (n <= 0)
+                    {
+                        std::cout << "Client disconnected (fd: " << pfd.fd << ")\n";
+                        ::close(pfd.fd);
+                        pfd.fd = -1; // Mark for removal
+                        continue;
+                    }
+
+                    Packet pkt;
+                    int rc = deserialize(buffer.data(), buffer.size(), pkt);
+                    if (rc != 0)
+                    {
+                        std::cerr << "Failed to deserialize packet from client (fd: " << pfd.fd << "), error code: " << rc << "\n";
+                        ::close(pfd.fd);
+                        pfd.fd = -1;
+                        continue;
+                    }
+
+                    // Handle the packet
+                    handle_packet(pkt, pfd.fd, partitions, password_found);
                 }
             }
+
+            // Remove closed entries from pollfds
+            pollfds.erase(
+                std::remove_if(
+                    pollfds.begin(),
+                    pollfds.end(),
+                    [](const pollfd &p)
+                    { return p.fd == -1; }),
+                pollfds.end());
+
+            // Remove closed RAII client FDs that no longer appear in pollfds
+            client_fds.erase(
+                std::remove_if(
+                    client_fds.begin(),
+                    client_fds.end(),
+                    [&](const Fd &fd)
+                    {
+                        // Keep only if fd.get() still exists in pollfds
+                        return std::none_of(
+                            pollfds.begin(),
+                            pollfds.end(),
+                            [&](const pollfd &p)
+                            { return p.fd == fd.get(); });
+                    }),
+                client_fds.end());
         }
-
-
-    } catch (const std::runtime_error &e) {
+    }
+    catch (const std::runtime_error &e)
+    {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }

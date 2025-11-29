@@ -29,7 +29,28 @@ int main(int argc, char* argv[]) {
             throw std::runtime_error("Failed to connect to server");
         }
 
-        std::cout << "Connected to server successfully.\n";
+        /**
+         * wait to receive CONACK
+         * send WORKREQ
+         * wait to receive WORK
+         */
+
+        std::cout << "Connected to server, waiting for CONACK.\n";
+        std::vector<uint8_t> buffer;
+        ssize_t ret = recv_full_packet(sockfd, buffer);
+        if (ret <= 0) {
+            throw std::runtime_error("Failed to receive CONACK packet");
+        }
+        Packet packet;
+        if (deserialize(buffer.data(), buffer.size(), packet) != 0) {
+            throw std::runtime_error("Failed to deserialize CONACK packet");
+        }
+        if (packet.header.flags != CONACK) {
+            throw std::runtime_error("Expected CONACK packet");
+        }
+        std::cout << "Received CONACK from server.\n";
+        std::cout << "Hash: " << std::string(packet.payload.begin(), packet.payload.end()) << "\n";
+
         close(sockfd);
 
     } catch (const std::exception &e) {
