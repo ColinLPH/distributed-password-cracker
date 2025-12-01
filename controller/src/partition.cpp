@@ -36,8 +36,7 @@ std::vector<std::string> generate_work_prefixes(const std::vector<std::unique_pt
 int update_prefix(std::string &prefix, std::vector<std::unique_ptr<Partition>> &partitions)
 {
     for (auto& part : partitions) {
-        if (prefix[0] == part->prefix[0] &&
-            part->status.load() == READY) {
+        if (prefix[0] == part->prefix[0]) {
             std::cout << "Updating prefix: '" << part->prefix << "' to '" << prefix << "'\n";
             part->prefix = prefix;
             return 0;

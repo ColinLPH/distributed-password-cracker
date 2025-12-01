@@ -34,13 +34,10 @@ void print_hash_info(const hash_info& info);
 hash_info parse_hash_info(const std::string& hash_field);
 std::vector<std::string> split(const std::string& str, char delim);
 
-// std::string generate_hash(const std::string& password_candidate, 
-//                           const hash_info& hashData);
-// std::string generate_salt_for_hash(const hash_info& hashData);
+std::string generate_hash(const std::string& password_candidate, 
+                          const hash_info& hashData);
+std::string generate_salt_for_hash(const hash_info& hashData);
 
-// void generate_combination(std::string &starter);
-// bool process_partition(Partition &part, const hash_info &info, std::string &found_password);
-
-
+void generate_combination(std::string &starter);
 
 #endif // WORKER_H

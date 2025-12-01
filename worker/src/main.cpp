@@ -1,17 +1,10 @@
 #include <memory>
 #include <atomic>
+#include <thread>
 
 #include "parse_args.h"
 #include "network.h"
 #include "worker.h"
-
-enum NODE_STATUS
-{
-    IDLE,
-    READY,
-    WORKING,
-    CLOSING
-};
 
 int main(int argc, char *argv[])
 {
@@ -29,7 +22,6 @@ int main(int argc, char *argv[])
         std::cout << "Connected to server, waiting for CONACK.\n";
 
         auto password_found = std::make_shared<std::atomic<bool>>(false);
-        auto work_done = std::make_shared<std::atomic<uint16_t>>(0);
         auto shared_hash_info = std::make_shared<hash_info>();
 
         while (!password_found->load(std::memory_order_relaxed))
@@ -54,12 +46,7 @@ int main(int argc, char *argv[])
                 std::cout << "Received CONACK from server.\n";
                 *shared_hash_info = parse_hash_info(std::string(packet.payload.begin(), packet.payload.end()));
                 print_hash_info(*shared_hash_info);
-                if (send_workreq(sockfd, DEFAULT_RETRIES, args.threads) < 0)
-                {
-                    close(sockfd);
-                    throw std::runtime_error("Failed to send WORKREQ to server");
-                }
-                std::cout << "Sent WORKREQ to server.\n";
+
                 break;
             case WORK:
             {
@@ -76,7 +63,7 @@ int main(int argc, char *argv[])
                 {
                     prefixes.push_back(token);
                 }
-                
+
                 std::cout << "Work size: " << static_cast<int>(packet.header.work_size) << "\n";
                 std::cout << "Checkpoint interval: " << static_cast<int>(packet.header.checkpoint_interval) << "\n";
                 // Debug: print prefixes
@@ -88,21 +75,45 @@ int main(int argc, char *argv[])
                 std::cout << "\n";
 
                 // Launch worker threads
-                // std::vector<std::thread> thread_pool;
-                // thread_pool.reserve(prefixes.size());
-                // work_done->store(0, std::memory_order_relaxed);
-                // for (int i = 0; i < prefixes.size(); ++i)
-                // {
-                //     thread_pool.emplace_back([&, i](){
-                        
-                //     });
-                // }
+                std::vector<std::thread> thread_pool;
+                thread_pool.reserve(prefixes.size());
+                for (int i = 0; i < prefixes.size(); ++i)
+                {
+                    thread_pool.emplace_back([&, i]()
+                                             {
+                        int work_done = 0;
+                        auto starter = prefixes[i];
+                        std::cout << "Thread " << i << " started with prefix: " << starter << "\n";
+                        do {
+                            auto generated_hash = generate_hash(starter, *shared_hash_info);
+                            if (generated_hash == shared_hash_info->full_hash) {
+                                std::cout << "Password found by thread " << i << ": " << starter << std::endl;
+                                password_found->store(true, std::memory_order_relaxed);
+                                if (send_pwdfind(sockfd, DEFAULT_RETRIES, starter) != 0) {
+                                    std::cerr << "Failed to send PWDFIND to server.\n";
+                                }
+                                return;
+                            }
+                            generate_combination(starter);
+                            ++work_done;
+                            if (work_done % packet.header.checkpoint_interval == 0) {
+                                std::cout << "Thread " << i << " checkpoint: " << work_done << ". Candidate: " << starter << "\n";
+                                if (send_check(sockfd, DEFAULT_RETRIES, work_done, packet.header.work_size, starter) != 0) {
+                                    std::cerr << "Failed to send CHECK to server.\n";
+                                }
+                            }
+                        } while (work_done <= packet.header.work_size && !password_found->load(std::memory_order_relaxed));
+                        std::cout << "Thread " << i << " finished.\n";
+                        if(send_workfin(sockfd, DEFAULT_RETRIES, starter) != 0) {
+                            std::cerr << "Failed to send WORKFIN to server.\n";
+                        } });
+                }
 
-                // for (auto &t : thread_pool)
-                // {
-                //     if (t.joinable())
-                //         t.join();
-                // }
+                for (auto &t : thread_pool)
+                {
+                    if (t.joinable())
+                        t.join();
+                }
                 break;
             }
             case KILL:
@@ -113,6 +124,13 @@ int main(int argc, char *argv[])
                 std::cout << "Received unexpected packet with flag: " << static_cast<int>(packet.header.flags) << "\n";
                 break;
             }
+
+            if (send_workreq(sockfd, DEFAULT_RETRIES, args.threads) < 0)
+            {
+                close(sockfd);
+                throw std::runtime_error("Failed to send WORKREQ to server");
+            }
+            std::cout << "Sent WORKREQ to server.\n";
         }
 
         close(sockfd);

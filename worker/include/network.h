@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <vector>
 #include <iostream>
+#include <mutex>
 
 #include "parse_args.h"
 
@@ -51,8 +52,8 @@ ssize_t serialize(const Packet &packet, std::vector<uint8_t> &buffer);
 int deserialize(const uint8_t *buf, size_t len, Packet &result);
 
 int send_workreq(int server_fd, int retries, int num_threads);
-int send_workfin();
-int send_check();
-int send_pwdfind();
+int send_workfin(int server_fd, int retries, std::string &last_prefix);
+int send_check(int server_fd, int retries, uint16_t work_done, uint16_t work_size, std::string &last_prefix);
+int send_pwdfind(int server_fd, int retries, const std::string &found_password);
 
 #endif // NETWORK_H

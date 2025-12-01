@@ -1,5 +1,7 @@
 #include "network.h"
 
+std::mutex send_mutex;
+
 int connect_to_server(const Args &args)
 {
     auto sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -48,18 +50,17 @@ ssize_t serialize(const Packet &packet, std::vector<uint8_t> &buffer)
     return buffer.size();
 }
 
-
 int deserialize(const uint8_t *buffer, size_t len, Packet &result)
 {
-    if (len < HEADER_SIZE) {
+    if (len < HEADER_SIZE)
+    {
         std::cerr << "buffer too short for header\n";
         return -1;
     }
 
-    result.header.flags    = buffer[0];
+    result.header.flags = buffer[0];
     result.header.data_len = buffer[1];
 
-    // Extract raw big-endian values
     uint16_t raw_work_size =
         (uint16_t(buffer[2]) << 8) | buffer[3];
     uint16_t raw_checkpoint =
@@ -70,14 +71,16 @@ int deserialize(const uint8_t *buffer, size_t len, Packet &result)
 
     size_t expected_len = HEADER_SIZE + result.header.data_len;
 
-    if (len < expected_len) {
+    if (len < expected_len)
+    {
         std::cerr << "buffer shorter than expected payload length\n";
         return -1;
     }
 
     result.payload.resize(result.header.data_len);
 
-    if (result.header.data_len > 0) {
+    if (result.header.data_len > 0)
+    {
         std::copy(buffer + HEADER_SIZE,
                   buffer + expected_len,
                   result.payload.begin());
@@ -86,16 +89,16 @@ int deserialize(const uint8_t *buffer, size_t len, Packet &result)
     return 0;
 }
 
-
-ssize_t send_all(int fd, const uint8_t *data, size_t len)
+ssize_t threadsafe_send_all(int fd, const uint8_t *data, size_t len)
 {
+    std::lock_guard<std::mutex> lock(send_mutex);
     ssize_t total_sent = 0;
     while (total_sent < len)
     {
         ssize_t sent = ::send(fd, data + total_sent, len - total_sent, 0);
         if (sent <= 0)
         {
-            return -1; // Error or connection closed
+            return -1; 
         }
         total_sent += sent;
     }
@@ -110,7 +113,7 @@ ssize_t recv_all(int fd, uint8_t *buffer, size_t len)
         ssize_t received = ::recv(fd, buffer + total_received, len - total_received, 0);
         if (received <= 0)
         {
-            return -1; // Error or connection closed
+            return -1; 
         }
         total_received += received;
     }
@@ -124,9 +127,9 @@ ssize_t recv_full_packet(int fd, std::vector<uint8_t> &buffer)
     // Receive header first
     ssize_t n = recv_all(fd, header_buf, HEADER_SIZE);
     if (n <= 0)
-        return n; // error or connection closed
+        return n; 
     if (n != HEADER_SIZE)
-        return -1; // incomplete header
+        return -1; 
 
     uint8_t flags = header_buf[0];
     uint8_t data_len = header_buf[1];
@@ -136,7 +139,6 @@ ssize_t recv_full_packet(int fd, std::vector<uint8_t> &buffer)
     buffer.resize(HEADER_SIZE + data_len);
     memcpy(buffer.data(), header_buf, HEADER_SIZE);
 
-    // If there is a payload, receive it
     if (data_len > 0)
     {
         n = recv_all(fd, buffer.data() + HEADER_SIZE, data_len);
@@ -146,7 +148,7 @@ ssize_t recv_full_packet(int fd, std::vector<uint8_t> &buffer)
             return -2; // incomplete payload
     }
 
-    return static_cast<ssize_t>(buffer.size()); // total bytes read
+    return static_cast<ssize_t>(buffer.size()); 
 }
 
 int send_workreq(int server_fd, int retries, int num_threads)
@@ -156,23 +158,113 @@ int send_workreq(int server_fd, int retries, int num_threads)
     workreq_packet.header.data_len = 1;
     workreq_packet.payload.push_back(static_cast<uint8_t>(num_threads));
 
-    std::vector<uint8_t> serialized_packet;
-    if (serialize(workreq_packet, serialized_packet) < 0)
+    std::vector<uint8_t> buffer;
+    if (serialize(workreq_packet, buffer) < 0)
     {
         std::cerr << "Failed to serialize WORKREQ packet.\n";
-        return -1; // Serialization failed
+        return -1; 
     }
 
     for (int attempt = 0; attempt < retries; ++attempt)
     {
-        ssize_t n = send_all(server_fd, serialized_packet.data(), serialized_packet.size());
-        if (n == static_cast<ssize_t>(serialized_packet.size()))
+        ssize_t n = threadsafe_send_all(server_fd, buffer.data(), buffer.size());
+        if (n == static_cast<ssize_t>(buffer.size()))
         {
-            return 0; // Successfully sent
+            return 0; 
         }
+        std::cerr << "Failed to send CONACK, attempt " << (attempt + 1) << "\n";
         // Optionally add a delay here before retrying
     }
 
-    std::cerr << "Failed to send WORKREQ after " << retries << " attempts.\n";
-    return -1; // Failed to send after retries
+    return -1; 
+}
+
+int send_workfin(int server_fd, int retries, std::string &last_prefix)
+{
+    Packet workfin_packet;
+    workfin_packet.header.flags = WORKFIN;
+    workfin_packet.header.data_len = last_prefix.size();
+    workfin_packet.payload.insert(workfin_packet.payload.end(),
+                                  last_prefix.begin(),
+                                  last_prefix.end());
+    std::vector<uint8_t> serialized_packet;
+    if (serialize(workfin_packet, serialized_packet) < 0)
+    {
+        std::cerr << "Failed to serialize WORKFIN packet.\n";
+        return -1; 
+    }
+
+    for (int attempt = 0; attempt < retries; ++attempt)
+    {
+        ssize_t n = threadsafe_send_all(server_fd, serialized_packet.data(), serialized_packet.size());
+        if (n == static_cast<ssize_t>(serialized_packet.size()))
+        {
+            return 0; 
+        }
+        // Could do: add delay before retry
+        std::cerr << "Failed to send WORKFIN, attempt " << (attempt + 1) << "\n";
+    }
+
+    return -1;
+}
+
+int send_check(int server_fd, int retries, uint16_t work_done, uint16_t work_size, std::string &last_prefix)
+{
+    Packet check_packet;
+    check_packet.header.flags = CHECK;
+    check_packet.header.work_size = work_size;
+    check_packet.header.checkpoint_interval = work_done;
+    check_packet.header.data_len = last_prefix.size();
+
+    check_packet.payload.insert(check_packet.payload.end(),
+                                last_prefix.begin(),
+                                last_prefix.end());
+
+    std::vector<uint8_t> buffer;
+    if (serialize(check_packet, buffer) < 0)
+    {
+        std::cerr << "Failed to serialize CHECK packet.\n";
+        return -1; 
+    }
+
+    for (int attempt = 0; attempt < retries; ++attempt)
+    {
+        ssize_t n = threadsafe_send_all(server_fd, buffer.data(), buffer.size());
+        if (n == static_cast<ssize_t>(buffer.size()))
+        {
+            return 0; 
+        }
+        // Could do: add delay before retry
+        std::cerr << "Failed to send CHECK, attempt " << (attempt + 1) << "\n";
+    }
+    return -1;
+}
+
+int send_pwdfind(int server_fd, int retries, const std::string &found_password)
+{
+    Packet pwdfind_packet;
+    pwdfind_packet.header.flags = PWDFND;
+    pwdfind_packet.header.data_len = found_password.size();
+    pwdfind_packet.payload.insert(pwdfind_packet.payload.end(),
+                                    found_password.begin(), 
+                                    found_password.end());
+    std::vector<uint8_t> buffer;
+    if (serialize(pwdfind_packet, buffer) < 0)
+    {
+        std::cerr << "Failed to serialize PWDFND packet.\n";
+        return -1;
+    }
+
+    for (int attempt = 0; attempt < retries; ++attempt)
+    {
+        ssize_t n = threadsafe_send_all(server_fd, buffer.data(), buffer.size());
+        if (n == static_cast<ssize_t>(buffer.size()))
+        {
+            return 0; 
+        }
+        // Could do: add delay before retry
+        std::cerr << "Failed to send PWDFND, attempt " << (attempt + 1) << "\n";
+    }
+
+    return -1;
 }

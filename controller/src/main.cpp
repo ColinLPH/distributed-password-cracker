@@ -5,6 +5,13 @@
 #include "parse_args.h"
 #include "partition.h"
 
+void print_checkpoint_info(int client_fd, const Packet &pkt)
+{
+    std::cout << "Client " <<  client_fd << " Checkpoint  Info:\n";
+    std::cout << "  Work Remaining: " << pkt.header.work_size - pkt.header.checkpoint_interval << "\n";
+    std::cout << "  Last Prefix: " << std::string(pkt.payload.begin(), pkt.payload.end()) << "\n";
+}
+
 int main(int argc, char *argv[])
 {
     Args args;
@@ -138,17 +145,36 @@ int main(int argc, char *argv[])
                         break;
                     }
                     case WORKFIN:
-                        // handle_WORKFIN(pkt, client_fd, password_found);
+                    {
                         std::cout << "Received WORKFIN packet from fd " << pfd.fd << "\n";
+                        std::string last_prefix(pkt.payload.begin(), pkt.payload.end());
+                        if (update_prefix(last_prefix, partitions) != 0)
+                        {
+                            std::cerr << "Failed to update prefix from WORKFIN packet: " << last_prefix
+                                      << " (fd: " << pfd.fd << ")\n";
+                        }
                         break;
+                    }
                     case CHECK:
-                        // handle_CHECK(pkt, client_fd, password_found);
+                    {
                         std::cout << "Received CHECK packet from fd " << pfd.fd << "\n";
+                        print_checkpoint_info(pfd.fd, pkt); // Could do: optimize sending next work based on work remaining
+                        std::string last_prefix_chk(pkt.payload.begin(), pkt.payload.end());
+                        if (update_prefix(last_prefix_chk, partitions) != 0)
+                        {
+                            std::cerr << "Failed to update prefix from CHECK packet: " << last_prefix_chk
+                                      << " (fd: " << pfd.fd << ")\n";
+                        }
                         break;
+                    }
                     case PWDFND:
-                        // handle_PWDFND(pkt, client_fd);
+                    {
                         std::cout << "Received PWDFND packet from fd " << pfd.fd << "\n";
+                        password_found = true;
+                        std::string found_password(pkt.payload.begin(), pkt.payload.end());
+                        std::cout << "Password found: " << found_password << "\n";
                         break;
+                    }
                     default:
                         std::cerr << "Unknown packet flag: " << static_cast<int>(pkt.header.flags) << "\n";
                         break;
