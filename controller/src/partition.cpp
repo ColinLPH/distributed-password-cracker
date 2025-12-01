@@ -20,6 +20,19 @@ std::vector<std::unique_ptr<Partition>> create_partitions(const unsigned prefix_
     return partitions;
 }
 
+std::vector<std::string> generate_work_prefixes(const std::vector<std::unique_ptr<Partition>> &partitions, 
+    size_t &part_index, uint8_t num_prefixes)
+{
+    std::vector<std::string> work_prefixes;
+    for(uint8_t i = 0; i < num_prefixes; ++i) {
+        work_prefixes.push_back(partitions[part_index]->prefix);
+        partitions[part_index]->status.store(IN_PROGRESS);
+        part_index = (part_index + 1) % partitions.size();
+    }
+
+    return work_prefixes;
+}
+
 int update_prefix(std::string &prefix, std::vector<std::unique_ptr<Partition>> &partitions)
 {
     for (auto& part : partitions) {

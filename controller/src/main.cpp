@@ -16,6 +16,7 @@ int main(int argc, char *argv[])
     print_args(args);
 
     auto partitions = create_partitions(DEFAULT_PREFIX_LEN);
+    size_t part_index = 0;
     bool password_found = false;
 
     try
@@ -85,8 +86,8 @@ int main(int argc, char *argv[])
                         pollfds.push_back(entry);
 
                         client_fds.push_back(std::move(client_fd));
-                        
-                        if (send_conack(entry.fd, 3, args) != 0)
+
+                        if (send_conack(entry.fd, DEFAULT_RETRIES, args) != 0)
                         {
                             std::cerr << "Failed to send CONACK to client (fd: " << entry.fd << ")\n";
                             ::close(entry.fd);
@@ -119,7 +120,39 @@ int main(int argc, char *argv[])
                     }
 
                     // Handle the packet
-                    handle_packet(pkt, pfd.fd, partitions, password_found);
+                    switch (pkt.header.flags)
+                    {
+                    case WORKREQ:
+                    {
+                        // handle_WORKREQ(pkt, client_fd, partitions, password_found);
+                        std::cout << "Received WORKREQ packet from fd " << pfd.fd << "\n";
+                        // cast payload to uint8_t
+                        auto num_threads = pkt.payload[0];
+                        auto prefixes = generate_work_prefixes(partitions, part_index, num_threads);
+                        if (send_work(pfd.fd, DEFAULT_RETRIES, args, prefixes) != 0)
+                        {
+                            std::cerr << "Failed to send WORK packet to client (fd: " << pfd.fd << ")\n";
+                            ::close(pfd.fd);
+                            pfd.fd = -1;
+                        }
+                        break;
+                    }
+                    case WORKFIN:
+                        // handle_WORKFIN(pkt, client_fd, password_found);
+                        std::cout << "Received WORKFIN packet from fd " << pfd.fd << "\n";
+                        break;
+                    case CHECK:
+                        // handle_CHECK(pkt, client_fd, password_found);
+                        std::cout << "Received CHECK packet from fd " << pfd.fd << "\n";
+                        break;
+                    case PWDFND:
+                        // handle_PWDFND(pkt, client_fd);
+                        std::cout << "Received PWDFND packet from fd " << pfd.fd << "\n";
+                        break;
+                    default:
+                        std::cerr << "Unknown packet flag: " << static_cast<int>(pkt.header.flags) << "\n";
+                        break;
+                    }
                 }
             }
 

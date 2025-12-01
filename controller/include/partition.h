@@ -30,6 +30,10 @@ struct Partition
 
 std::vector<std::string> generate_prefixes(const unsigned prefix_len);
 std::vector<std::unique_ptr<Partition>> create_partitions(const unsigned prefix_len);
+std::vector<std::string> generate_work_prefixes(
+    const std::vector<std::unique_ptr<Partition>> &partitions,
+    size_t &part_index,
+    uint8_t num_prefixes);
 int update_prefix(std::string &prefix, std::vector<std::unique_ptr<Partition>> &partitions);
 
 #endif // PARTITION_H

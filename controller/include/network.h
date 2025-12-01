@@ -10,15 +10,17 @@
 #include <stdexcept>
 #include <vector>
 #include <algorithm>
+#include <cstring>
 #include <poll.h>
 #include <iostream>
 
 #include "partition.h"
 #include "parse_args.h"
 
+constexpr int DEFAULT_RETRIES = 3;
 constexpr int MAX_EPOLL_EVENTS = 100;
 
-constexpr size_t HEADER_SIZE = 2;
+constexpr size_t HEADER_SIZE = 6;
 
 class Fd {
     public:
@@ -65,6 +67,8 @@ enum Header_Flags : uint8_t {
 struct Header {
     uint8_t flags;
     uint8_t data_len;
+    uint16_t work_size;
+    uint16_t checkpoint_interval;
 };
 
 struct Packet {
@@ -78,13 +82,12 @@ int create_listen_socket(int port);
 int send_all(int fd, const uint8_t* data, size_t len);
 int recv_all(int fd, uint8_t* buffer, size_t len);
 ssize_t recv_full_packet(int fd, std::vector<uint8_t> &buffer);
-void handle_packet(const Packet &pkt, int client_fd,
-                   const std::vector<std::unique_ptr<Partition>> &partitions,
-                   bool &password_found);
 
 ssize_t serialize(const Packet &packet, std::vector<uint8_t> &buffer);
 int deserialize(const uint8_t *buffer, size_t len, Packet &result);
 
-int send_conack(int client_fd, int retries, Args &args);
+int send_conack(int client_fd, int retries, const Args &args);
+int send_work(int client_fd, int retries, const Args &args, const std::vector<std::string> &prefixes);
+int send_kill();
 
 #endif // NETWORK_H
