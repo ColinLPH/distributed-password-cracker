@@ -246,3 +246,29 @@ int send_work(int client_fd, int retries, const Args &args, const std::vector<st
     }
     return 0;
 }
+
+int send_kill(int client_fd, int retries)
+{
+    Packet pkt;
+    pkt.header.flags = KILL;
+    pkt.header.data_len = 0; 
+
+    std::vector<uint8_t> buffer;
+    ssize_t ret = serialize(pkt, buffer);
+    if (ret < 0)
+    {
+        std::cerr << "Failed to serialize KILL packet\n";
+        return -1;
+    }
+
+    for (int attempt = 0; attempt < retries; ++attempt)
+    {
+        int n = send_all(client_fd, buffer.data(), buffer.size());
+        if (n == static_cast<int>(buffer.size()))
+        {
+            return 0; // Success
+        }
+        std::cerr << "Failed to send KILL, attempt " << (attempt + 1) << "\n";
+    }
+    return -1; 
+}

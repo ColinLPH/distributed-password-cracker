@@ -88,6 +88,6 @@ int deserialize(const uint8_t *buffer, size_t len, Packet &result);
 
 int send_conack(int client_fd, int retries, const Args &args);
 int send_work(int client_fd, int retries, const Args &args, const std::vector<std::string> &prefixes);
-int send_kill();
+int send_kill(int client_fd, int retries);
 
 #endif // NETWORK_H

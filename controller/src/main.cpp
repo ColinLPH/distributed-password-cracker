@@ -7,7 +7,7 @@
 
 void print_checkpoint_info(int client_fd, const Packet &pkt)
 {
-    std::cout << "Client " <<  client_fd << " Checkpoint  Info:\n";
+    std::cout << "Client " << client_fd << " Checkpoint  Info:\n";
     std::cout << "  Work Remaining: " << pkt.header.work_size - pkt.header.checkpoint_interval << "\n";
     std::cout << "  Last Prefix: " << std::string(pkt.payload.begin(), pkt.payload.end()) << "\n";
 }
@@ -173,6 +173,18 @@ int main(int argc, char *argv[])
                         password_found = true;
                         std::string found_password(pkt.payload.begin(), pkt.payload.end());
                         std::cout << "Password found: " << found_password << "\n";
+                        for (auto &entry : pollfds)
+                        {
+                            if (entry.fd != -1 && entry.fd != listen_fd.get())
+                            {
+                                std::cout << "Active client fd: " << entry.fd << "\n";
+                                if (send_kill(entry.fd, DEFAULT_RETRIES) != 0)
+                                {
+                                    std::cerr << "Failed to send KILL packet to client (fd: " << entry.fd << ")\n";
+                                }
+                                
+                            }
+                        }
                         break;
                     }
                     default:
