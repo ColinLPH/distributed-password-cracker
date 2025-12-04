@@ -6,6 +6,7 @@
 #include <vector>
 #include <string>
 #include <sstream>
+#include <regex>
 
 constexpr int DEFAULT_PORT = 8080;
 constexpr int DEFAULT_WORK_SIZE = 10000;
@@ -23,5 +24,6 @@ struct Args {
 
 void print_args(const Args &args);
 int parse_args(int argc, char *argv[], Args &args);
+int is_valid_hash(const std::string &hash);
 
 #endif // PARSE_ARGS_H

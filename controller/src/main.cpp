@@ -1,5 +1,7 @@
 #include <iostream>
 #include <unistd.h>
+#include <chrono>
+#include <unordered_map>
 
 #include "network.h"
 #include "parse_args.h"
@@ -8,7 +10,7 @@
 void print_checkpoint_info(int client_fd, const Packet &pkt)
 {
     std::cout << "Client " << client_fd << " Checkpoint  Info:\n";
-    std::cout << "  Work Remaining: " << pkt.header.work_size - pkt.header.checkpoint_interval << "\n";
+    std::cout << "  Interval: " << pkt.header.checkpoint_interval << "\n";
     std::cout << "  Last Prefix: " << std::string(pkt.payload.begin(), pkt.payload.end()) << "\n";
 }
 
@@ -25,6 +27,13 @@ int main(int argc, char *argv[])
     auto partitions = create_partitions(DEFAULT_PREFIX_LEN);
     size_t part_index = 0;
     bool password_found = false;
+    bool start_time_set = false;
+    std::chrono::steady_clock::time_point start_time, end_time;
+
+    int connects = 0;
+    int work_requests = 0;
+    int checkpoints = 0;
+    int total_pkts = 0;
 
     try
     {
@@ -36,6 +45,7 @@ int main(int argc, char *argv[])
 
         std::vector<pollfd> pollfds;
         std::vector<Fd> client_fds;
+        std::unordered_map<int, std::chrono::steady_clock::time_point> last_activity;
 
         pollfd listen_entry{};
         listen_entry.fd = listen_fd.get();
@@ -47,7 +57,7 @@ int main(int argc, char *argv[])
         while (!password_found)
         {
 
-            int n = poll(pollfds.data(), pollfds.size(), -1);
+            int n = poll(pollfds.data(), pollfds.size(), 1000);
             if (n < 0)
             {
                 throw std::runtime_error("poll() failed");
@@ -87,12 +97,16 @@ int main(int argc, char *argv[])
                                   << inet_ntoa(client_addr.sin_addr) << ":"
                                   << ntohs(client_addr.sin_port) << "\n";
 
+                        last_activity[client_fd.get()] = std::chrono::steady_clock::now();
+
                         pollfd entry{};
                         entry.fd = client_fd.get();
                         entry.events = POLLIN;
                         pollfds.push_back(entry);
 
                         client_fds.push_back(std::move(client_fd));
+                        ++total_pkts;
+                        ++connects;
 
                         if (send_conack(entry.fd, DEFAULT_RETRIES, args) != 0)
                         {
@@ -100,6 +114,7 @@ int main(int argc, char *argv[])
                             ::close(entry.fd);
                             entry.fd = -1; // Mark for removal
                         }
+                        ++total_pkts;
                     }
                 }
 
@@ -115,7 +130,7 @@ int main(int argc, char *argv[])
                         pfd.fd = -1; // Mark for removal
                         continue;
                     }
-
+                    last_activity[pfd.fd] = std::chrono::steady_clock::now();
                     Packet pkt;
                     int rc = deserialize(buffer.data(), buffer.size(), pkt);
                     if (rc != 0)
@@ -125,15 +140,14 @@ int main(int argc, char *argv[])
                         pfd.fd = -1;
                         continue;
                     }
-
+                    ++total_pkts;
                     // Handle the packet
                     switch (pkt.header.flags)
                     {
                     case WORKREQ:
                     {
-                        // handle_WORKREQ(pkt, client_fd, partitions, password_found);
                         std::cout << "Received WORKREQ packet from fd " << pfd.fd << "\n";
-                        // cast payload to uint8_t
+                        ++work_requests;
                         auto num_threads = pkt.payload[0];
                         auto prefixes = generate_work_prefixes(partitions, part_index, num_threads);
                         if (send_work(pfd.fd, DEFAULT_RETRIES, args, prefixes) != 0)
@@ -141,6 +155,12 @@ int main(int argc, char *argv[])
                             std::cerr << "Failed to send WORK packet to client (fd: " << pfd.fd << ")\n";
                             ::close(pfd.fd);
                             pfd.fd = -1;
+                        }
+                        ++total_pkts;
+                        if (!start_time_set)
+                        {
+                            start_time = std::chrono::steady_clock::now();
+                            start_time_set = true;
                         }
                         break;
                     }
@@ -157,7 +177,6 @@ int main(int argc, char *argv[])
                     }
                     case CHECK:
                     {
-                        std::cout << "Received CHECK packet from fd " << pfd.fd << "\n";
                         print_checkpoint_info(pfd.fd, pkt); // Could do: optimize sending next work based on work remaining
                         std::string last_prefix_chk(pkt.payload.begin(), pkt.payload.end());
                         if (update_prefix(last_prefix_chk, partitions) != 0)
@@ -165,6 +184,8 @@ int main(int argc, char *argv[])
                             std::cerr << "Failed to update prefix from CHECK packet: " << last_prefix_chk
                                       << " (fd: " << pfd.fd << ")\n";
                         }
+
+                        ++checkpoints;
                         break;
                     }
                     case PWDFND:
@@ -173,6 +194,7 @@ int main(int argc, char *argv[])
                         password_found = true;
                         std::string found_password(pkt.payload.begin(), pkt.payload.end());
                         std::cout << "Password found: " << found_password << "\n";
+                        end_time = std::chrono::steady_clock::now();
                         for (auto &entry : pollfds)
                         {
                             if (entry.fd != -1 && entry.fd != listen_fd.get())
@@ -182,7 +204,7 @@ int main(int argc, char *argv[])
                                 {
                                     std::cerr << "Failed to send KILL packet to client (fd: " << entry.fd << ")\n";
                                 }
-                                
+                                ++total_pkts;
                             }
                         }
                         break;
@@ -194,13 +216,40 @@ int main(int argc, char *argv[])
                 }
             }
 
-            // Remove closed entries from pollfds
+            auto now = std::chrono::steady_clock::now();
             pollfds.erase(
                 std::remove_if(
                     pollfds.begin(),
                     pollfds.end(),
-                    [](const pollfd &p)
-                    { return p.fd == -1; }),
+                    [&](pollfd &pfd)
+                    {
+                        if (pfd.fd == listen_fd.get())
+                            return false; // keep listening socket
+
+                        bool remove = false;
+
+                        // Check for timeout
+                        auto it = last_activity.find(pfd.fd);
+
+                        if (it != last_activity.end())
+                        {
+                            auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - it->second).count();
+
+                            if (duration > args.timeout)
+                            {
+                                std::cout << "Client fd " << pfd.fd << " timed out after " << duration << "s\n";
+                                ::close(pfd.fd);
+                                last_activity.erase(it);
+                                remove = true;
+                            }
+                        }
+
+                        // Already marked for removal (e.g., disconnected)
+                        if (pfd.fd == -1)
+                            remove = true;
+
+                        return remove;
+                    }),
                 pollfds.end());
 
             // Remove closed RAII client FDs that no longer appear in pollfds
@@ -219,6 +268,15 @@ int main(int argc, char *argv[])
                     }),
                 client_fds.end());
         }
+
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+        double elapsed_sec = elapsed_ms / 1000.0;
+        std::cout << "Total elapsed time: " << elapsed_sec << " seconds\n";
+        std::cout << "Total connections: " << connects << "\n";
+        std::cout << "Total work requests: " << work_requests << "\n";
+        std::cout << "Total checkpoints: " << checkpoints << "\n";
+        std::cout << "Estimated total candidates tried: " << checkpoints * args.checkpoint_interval << "\n";
+        std::cout << "Total packets processed: " << total_pkts << "\n";
     }
     catch (const std::runtime_error &e)
     {

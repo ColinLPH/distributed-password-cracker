@@ -51,6 +51,7 @@ ssize_t recv_full_packet(int fd, std::vector<uint8_t> &buffer);
 ssize_t serialize(const Packet &packet, std::vector<uint8_t> &buffer);
 int deserialize(const uint8_t *buf, size_t len, Packet &result);
 
+ssize_t threadsafe_send_all(int fd, const uint8_t *data, size_t len);
 int send_workreq(int server_fd, int retries, int num_threads);
 int send_workfin(int server_fd, int retries, std::string &last_prefix);
 int send_check(int server_fd, int retries, uint16_t work_done, uint16_t work_size, std::string &last_prefix);

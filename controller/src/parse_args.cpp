@@ -26,17 +26,38 @@ int parse_args(int argc, char* argv[], Args &args) {
             switch (opt) {
                 case 'p':
                     args.port = std::stoi(optarg);
+                    if (args.port < 1 || args.port > 65535) {
+                        throw std::out_of_range("Port number must be between 1 and 65535");
+                    }
+                    if (args.port < 1024) {
+                        std::cerr << "Warning: Using a port number below 1024 may require elevated privileges.\n";
+                    }
                     break;
                 case 'w':
                     args.work_size = std::stoi(optarg);
+                    if (args.work_size <= 0) {
+                        throw std::out_of_range("Work size must be a positive integer");
+                    }
                     break;
                 case 'c':
                     args.checkpoint_interval = std::stoi(optarg);
+                    if (args.checkpoint_interval <= 0) {
+                        throw std::out_of_range("Checkpoint interval must be a positive integer");
+                    }
                     break;
                 case 't':
                     args.timeout = std::stoi(optarg);
+                    if (args.timeout <= 0) {
+                        throw std::out_of_range("Timeout must be a positive integer");
+                    }
                     break;
                 case 'h':
+                    if(!optarg || std::string(optarg).empty()) {
+                        throw std::invalid_argument("Hash string cannot be empty");
+                    }
+                    if(!is_valid_hash(std::string(optarg))) {
+                        throw std::invalid_argument("Invalid hash format");
+                    }
                     args.hash = optarg;
                     break;
                 case '?': 
@@ -46,18 +67,48 @@ int parse_args(int argc, char* argv[], Args &args) {
                 default:
                     throw std::invalid_argument("Unexpected error parsing options");
             }
-        } catch (const std::invalid_argument &e) {
-            throw std::invalid_argument(
-                std::string("Invalid value for option '") + static_cast<char>(opt) + "': " + e.what());
-                return -1;
-        } catch (const std::out_of_range &e) {
-            throw std::out_of_range(
-                std::string("Value out of range for option '") + static_cast<char>(opt) + "': " + e.what());
-                return -1;
+        }         
+        catch (const std::exception &e) {
+            std::cerr << "Error: " << e.what() << "\n";
+            return -1;   // clean failure, no crash
         }
     }
 
     return 0;
 
+}
+
+#include <regex>
+#include <string>
+
+int is_valid_hash(const std::string &hash)
+{
+    static const std::regex md5_regex(
+        "^[A-Fa-f0-9]{32}$"
+    );
+    
+    static const std::regex bcrypt_regex(
+        R"(^\$2[aby]\$([0-2][0-9]|3[0-1])\$[./A-Za-z0-9]{53}$)"
+    );
+
+    static const std::regex yescrypt_regex(
+        R"(^\$(y|7)\$[^\$]+\$[./A-Za-z0-9]+\$[./A-Za-z0-9]+$)"
+    );
+
+    static const std::regex sha256crypt_regex(
+        R"(^\$5\$[A-Za-z0-9./]{1,16}\$[A-Za-z0-9./]{43}$)"
+    );
+
+    static const std::regex sha512crypt_regex(
+        R"(^\$6\$[A-Za-z0-9./]{1,16}\$[A-Za-z0-9./]{86}$)"
+    );
+
+    if (std::regex_match(hash, md5_regex))        return 1;
+    if (std::regex_match(hash, sha256crypt_regex)) return 1;
+    if (std::regex_match(hash, sha512crypt_regex)) return 1;
+    if (std::regex_match(hash, bcrypt_regex))     return 1;
+    if (std::regex_match(hash, yescrypt_regex))   return 1;
+
+    return 0;
 }
 

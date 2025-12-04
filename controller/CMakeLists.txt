@@ -22,5 +22,5 @@ if(MSVC)
 else()
   target_compile_options(controller PRIVATE -Wall -Wextra -Wpedantic)
     # Link with libcrypt on Unix/Linux
-  target_link_libraries(controller PRIVATE crypt)
+  #target_link_libraries(controller PRIVATE crypt)
 endif()

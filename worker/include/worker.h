@@ -1,6 +1,7 @@
 #ifndef WORKER_H
 #define WORKER_H
 
+#include <atomic>
 #include <crypt.h>
 #include <string>
 #include <vector>
@@ -9,6 +10,7 @@
 #include <stdexcept>
 #include <memory>
 #include <iostream>
+#include <mutex>
 
 constexpr int MIN_HASH_TOKENS = 3;
 constexpr int MAX_HASH_TOKENS = 4;
@@ -39,5 +41,8 @@ std::string generate_hash(const std::string& password_candidate,
 std::string generate_salt_for_hash(const hash_info& hashData);
 
 void generate_combination(std::string &starter);
+void update_total_work_done(std::shared_ptr<std::atomic<uint16_t>> &total_work_done, 
+                            const uint16_t work_size, 
+                            std::shared_ptr<std::atomic<bool>> &work_completed);
 
 #endif // WORKER_H

@@ -46,16 +46,16 @@ int main(int argc, char *argv[])
                 std::cout << "Received CONACK from server.\n";
                 *shared_hash_info = parse_hash_info(std::string(packet.payload.begin(), packet.payload.end()));
                 print_hash_info(*shared_hash_info);
-
                 break;
             case WORK:
             {
                 std::cout << "Received WORK packet from server.\n";
 
-                // Convert payload bytes to string
                 std::string payload_str(packet.payload.begin(), packet.payload.end());
 
-                // Split by spaces into a vector of strings
+                auto total_work_done = std::make_shared<std::atomic<uint16_t>>(0);
+                auto work_completed = std::make_shared<std::atomic<bool>>(false);
+
                 std::vector<std::string> prefixes;
                 std::istringstream iss(payload_str);
                 std::string token;
@@ -66,7 +66,6 @@ int main(int argc, char *argv[])
 
                 std::cout << "Work size: " << static_cast<int>(packet.header.work_size) << "\n";
                 std::cout << "Checkpoint interval: " << static_cast<int>(packet.header.checkpoint_interval) << "\n";
-                // Debug: print prefixes
                 std::cout << "Parsed " << prefixes.size() << " prefixes:\n";
                 for (const auto &p : prefixes)
                 {
@@ -74,7 +73,6 @@ int main(int argc, char *argv[])
                 }
                 std::cout << "\n";
 
-                // Launch worker threads
                 std::vector<std::thread> thread_pool;
                 thread_pool.reserve(prefixes.size());
                 for (int i = 0; i < prefixes.size(); ++i)
@@ -83,7 +81,6 @@ int main(int argc, char *argv[])
                                              {
                         int work_done = 0;
                         auto starter = prefixes[i];
-                        std::cout << "Thread " << i << " started with prefix: " << starter << "\n";
                         do {
                             auto generated_hash = generate_hash(starter, *shared_hash_info);
                             if (generated_hash == shared_hash_info->full_hash) {
@@ -102,7 +99,8 @@ int main(int argc, char *argv[])
                                     std::cerr << "Failed to send CHECK to server.\n";
                                 }
                             }
-                        } while (work_done <= packet.header.work_size && !password_found->load(std::memory_order_relaxed));
+                            update_total_work_done(total_work_done, packet.header.work_size, work_completed);
+                        } while (!work_completed->load(std::memory_order_relaxed) && !password_found->load(std::memory_order_relaxed));
                         std::cout << "Thread " << i << " finished.\n";
                         if(send_workfin(sockfd, DEFAULT_RETRIES, starter) != 0) {
                             std::cerr << "Failed to send WORKFIN to server.\n";
